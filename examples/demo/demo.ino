@@ -60,12 +60,20 @@ void setup() {
     Serial.println("[setup] Firmware downloader attachment failed (SD not available?)");
   }
 
-  // Register a simple root route.
+  // Attach OTA partition endpoints.
+  if (!firmwareDownloader.attachOTA(server)) {
+    Serial.println("OTA downloader attachment failed (SD not available?)");
+  }
+
+
+  // Register a root route.
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(200, "text/html",
       "<html><head><title>ESP32 Firmware Download Demo</title></head><body>"
       "<h1>Firmware Download Demo</h1>"
-      "<p>Click <a href=\"/dumpflash\">here</a> to download the firmware image.</p>"
+      "<p><a href=\"/dumpflash\">Download full flash clone</a></p>"
+      "<p><a href=\"/downloadota0\">Download OTA0 partition</a></p>"
+      "<p><a href=\"/downloadota1\">Download OTA1 partition</a></p>"
       "</body></html>");
   });
 

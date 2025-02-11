@@ -5,7 +5,7 @@
 #include <FS.h>
 #include "esp_flash.h"         // For esp_flash_read() and esp_flash_default_chip
 #include "esp_partition.h"     // For partition APIs
-#include "esp_image_format.h"  // For esp_image_header_t (not used in the full dump)
+#include "esp_image_format.h"  // For esp_image_header_t (not used in full flash dump)
 #include <esp_task_wdt.h>      // For esp_task_wdt_reset()
 #include <esp_err.h>
 
@@ -40,8 +40,20 @@ bool ESP32FirmwareDownloader::attach(AsyncWebServer &server, bool eraseUserData)
       Serial.println("[ESP32FirmwareDownloader] Could not auto-detect user data partition. No blanking will occur.");
     }
   }
-  // Attach the HTTP GET handler at the specified endpoint.
+  // Attach the HTTP GET handler for the full flash dump.
   server.on(_endpoint, HTTP_GET, handleDumpFlash);
+  return true;
+}
+
+bool ESP32FirmwareDownloader::attachOTA(AsyncWebServer &server) {
+  // Check if the SD card is available.
+  if (SD.cardType() == CARD_NONE) {
+    Serial.println("[ESP32FirmwareDownloader] SD card is not available for OTA download!");
+    return false;
+  }
+  // Attach endpoints for OTA0 and OTA1.
+  server.on("/downloadota0", HTTP_GET, handleDownloadOTA0);
+  server.on("/downloadota1", HTTP_GET, handleDownloadOTA1);
   return true;
 }
 
@@ -61,7 +73,7 @@ bool ESP32FirmwareDownloader::autoSetUserDataBlank() {
     Serial.printf("[ESP32FirmwareDownloader] Found user data partition '%s' at 0x%08X, size: %u bytes\n",
                   userPart->label, userPart->address, userPart->size);
     setBlankRegion(userPart->address, userPart->size);
-    // DO NOT call esp_partition_iterator_release() here because userPart is a partition pointer, not an iterator.
+    // Do not call esp_partition_iterator_release() because userPart is a partition pointer.
     return true;
   } else {
     Serial.println("[ESP32FirmwareDownloader] No user data partition found with label 'userdata'.");
@@ -141,5 +153,119 @@ void ESP32FirmwareDownloader::handleDumpFlash(AsyncWebServerRequest *request) {
   AsyncWebServerResponse* response = request->beginResponse(SD, filename, "application/octet-stream");
   response->addHeader("Content-Disposition", "attachment; filename=" + fname);
   Serial.printf("[ESP32FirmwareDownloader] Serving file %s for download.\n", filename.c_str());
+  request->send(response);
+}
+
+static const size_t OTAChunkSize = 4096;  // chunk size for OTA dump
+
+void ESP32FirmwareDownloader::handleDownloadOTA0(AsyncWebServerRequest *request) {
+  Serial.println("[ESP32FirmwareDownloader] Download OTA0 request received.");
+  // Find OTA_0 partition.
+  const esp_partition_t* ota0 = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
+  if (ota0 == NULL) {
+    Serial.println("[ESP32FirmwareDownloader] OTA0 partition not found!");
+    request->send(404, "text/plain", "OTA0 partition not found");
+    return;
+  }
+  uint32_t partSize = ota0->size;
+  Serial.printf("[ESP32FirmwareDownloader] OTA0 partition found: label=%s, size=%u bytes\n", ota0->label, partSize);
+  
+  String filename = "/ota0.bin";
+  if (SD.exists(filename)) {
+    SD.remove(filename);
+  }
+  File file = SD.open(filename, FILE_WRITE);
+  if (!file) {
+    request->send(500, "text/plain", "Failed to open OTA0 file on SD card");
+    return;
+  }
+  
+  uint32_t offset = ota0->address; // absolute flash address
+  uint32_t endOffset = ota0->address + partSize;
+  uint8_t buffer[OTAChunkSize];
+  uint32_t chunkCounter = 0;
+  
+  Serial.println("[ESP32FirmwareDownloader] Starting OTA0 partition dump...");
+  while (offset < endOffset) {
+    uint32_t toRead = ((endOffset - offset) < OTAChunkSize) ? (endOffset - offset) : OTAChunkSize;
+    esp_err_t err = esp_flash_read(esp_flash_default_chip, buffer, offset, toRead);
+    if (err != ESP_OK) {
+      Serial.printf("[ESP32FirmwareDownloader] Error reading OTA0 at offset %u, error: %d\n", offset, err);
+      file.close();
+      request->send(500, "text/plain", "Error reading OTA0 partition data");
+      return;
+    }
+    file.write(buffer, toRead);
+    offset += toRead;
+    chunkCounter++;
+    yield();
+    delay(5);
+    esp_task_wdt_reset();
+    if (chunkCounter % 10 == 0 || offset >= endOffset) {
+      Serial.printf("[ESP32FirmwareDownloader] OTA0: Dumped %u/%u bytes...\n", offset - ota0->address, partSize);
+    }
+  }
+  file.close();
+  Serial.println("[ESP32FirmwareDownloader] OTA0 partition dump completed.");
+  
+  AsyncWebServerResponse* response = request->beginResponse(SD, filename, "application/octet-stream");
+  response->addHeader("Content-Disposition", "attachment; filename=ota0.bin");
+  Serial.printf("[ESP32FirmwareDownloader] Serving OTA0 file for download.\n");
+  request->send(response);
+}
+
+void ESP32FirmwareDownloader::handleDownloadOTA1(AsyncWebServerRequest *request) {
+  Serial.println("[ESP32FirmwareDownloader] Download OTA1 request received.");
+  // Find OTA_1 partition.
+  const esp_partition_t* ota1 = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
+  if (ota1 == NULL) {
+    Serial.println("[ESP32FirmwareDownloader] OTA1 partition not found!");
+    request->send(404, "text/plain", "OTA1 partition not found");
+    return;
+  }
+  uint32_t partSize = ota1->size;
+  Serial.printf("[ESP32FirmwareDownloader] OTA1 partition found: label=%s, size=%u bytes\n", ota1->label, partSize);
+  
+  String filename = "/ota1.bin";
+  if (SD.exists(filename)) {
+    SD.remove(filename);
+  }
+  File file = SD.open(filename, FILE_WRITE);
+  if (!file) {
+    request->send(500, "text/plain", "Failed to open OTA1 file on SD card");
+    return;
+  }
+  
+  uint32_t offset = ota1->address; // absolute flash address
+  uint32_t endOffset = ota1->address + partSize;
+  uint8_t buffer[OTAChunkSize];
+  uint32_t chunkCounter = 0;
+  
+  Serial.println("[ESP32FirmwareDownloader] Starting OTA1 partition dump...");
+  while (offset < endOffset) {
+    uint32_t toRead = ((endOffset - offset) < OTAChunkSize) ? (endOffset - offset) : OTAChunkSize;
+    esp_err_t err = esp_flash_read(esp_flash_default_chip, buffer, offset, toRead);
+    if (err != ESP_OK) {
+      Serial.printf("[ESP32FirmwareDownloader] Error reading OTA1 at offset %u, error: %d\n", offset, err);
+      file.close();
+      request->send(500, "text/plain", "Error reading OTA1 partition data");
+      return;
+    }
+    file.write(buffer, toRead);
+    offset += toRead;
+    chunkCounter++;
+    yield();
+    delay(5);
+    esp_task_wdt_reset();
+    if (chunkCounter % 10 == 0 || offset >= endOffset) {
+      Serial.printf("[ESP32FirmwareDownloader] OTA1: Dumped %u/%u bytes...\n", offset - ota1->address, partSize);
+    }
+  }
+  file.close();
+  Serial.println("[ESP32FirmwareDownloader] OTA1 partition dump completed.");
+  
+  AsyncWebServerResponse* response = request->beginResponse(SD, filename, "application/octet-stream");
+  response->addHeader("Content-Disposition", "attachment; filename=ota1.bin");
+  Serial.printf("[ESP32FirmwareDownloader] Serving OTA1 file for download.\n");
   request->send(response);
 }
