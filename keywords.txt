@@ -2,4 +2,3 @@ ESP32FirmwareDownloader    KEYWORD1
 firmware                 KEYWORD2
 download                 KEYWORD2
 flash                    KEYWORD2
-SD                       KEYWORD2

@@ -1,34 +1,29 @@
 #ifndef ESP32FIRMWAREDOWNLOADER_H
 #define ESP32FIRMWAREDOWNLOADER_H
+#pragma once
 
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
 
 class ESP32FirmwareDownloader {
 public:
-  // Constructor: optionally specify the endpoint (default: "/dumpflash")
-  // and the default firmware filename (default: "fullclone.bin").
+  // Constructor: optionally specify the endpoint for the full flash dump
+  // (default: "/dumpflash") and the default firmware filename (default: "fullclone.bin").
   ESP32FirmwareDownloader(const char* endpoint = "/dumpflash", const String &filename = "fullclone.bin");
 
-  // Attach the full-flash dump download route to an already-created AsyncWebServer instance.
-  // If eraseUserData is true, the library will auto-detect a partition labeled "userdata"
-  // and blank it out in the dumped image.
-  // Returns true if the SD card is available and the route was attached successfully.
+  // Attach endpoints.
   bool attach(AsyncWebServer &server, bool eraseUserData = false);
+  bool attachAll(AsyncWebServer &server, bool eraseUserData = false);
 
-  // Attach the OTA partition download routes (OTA0 and OTA1) to the server.
-  // Returns true if the SD card is available and the routes were attached successfully.
-  bool attachOTA(AsyncWebServer &server);
-
-  // Set a custom firmware filename for the full flash dump (without a leading slash, e.g., "myfirmware.bin").
+  // Set a custom firmware filename.
   void setFilename(const String &filename);
 
-  // Manually set a blank region for the full flash dump (offset and length). Use 0,0 to disable.
+  // Set a blank region manually.
   void setBlankRegion(uint32_t offset, uint32_t length);
 
-  // Automatically detect a user data partition by label (e.g., "userdata")
-  // and set the blank region accordingly. Returns true if found.
+  // Auto-detect a single or multiple user-data partitions to blank.
   bool autoSetUserDataBlank();
+  bool autoSetUserDataBlankAll();
 
 private:
   const char* _endpoint;
@@ -36,15 +31,43 @@ private:
   uint32_t _blankOffset;
   uint32_t _blankLength;
 
-  // Static instance pointer for use in static request handlers (assumes a single instance).
+  // Support for multiple blank regions.
+  static const int MAX_BLANK_REGIONS = 4;
+  struct BlankRegion {
+    uint32_t offset;
+    uint32_t length;
+    const char* description;
+  };
+  static BlankRegion _blankRegions[MAX_BLANK_REGIONS];
+  static int _numBlankRegions;
+
+  // Single-instance pointer.
   static ESP32FirmwareDownloader* _instance;
 
-  // Static handler for the full flash dump.
-  static void handleDumpFlash(AsyncWebServerRequest *request);
+  // Callback functions for streaming.
+  static size_t flashStreamCallback(uint8_t *buffer, size_t maxLen, size_t index);
+  static size_t flashStreamCallbackBlanked(uint8_t *buffer, size_t maxLen, size_t index);
+  static size_t genericPartStreamCallback(uint8_t *buffer, size_t maxLen, size_t index);
 
-  // Static handlers for OTA partition downloads.
-  static void handleDownloadOTA0(AsyncWebServerRequest *request);
-  static void handleDownloadOTA1(AsyncWebServerRequest *request);
+  // HTTP endpoint handlers.
+  static void handleDumpFlash(AsyncWebServerRequest *request);
+  static void handleDumpFlashSecure(AsyncWebServerRequest *request);
+  static void handleDownloadPartitionDirect(AsyncWebServerRequest *request);
+  static void handleDownloadBoot(AsyncWebServerRequest *request);
+  static void handleActivatePartition(AsyncWebServerRequest *request);
+  static void handleClonePartition(AsyncWebServerRequest *request);
+  static void handleListPartitions(AsyncWebServerRequest *request);
+  static void handleRoot(AsyncWebServerRequest *request);
+  static void handleHexDump(AsyncWebServerRequest *request);
+  static void handleUploadBinary(AsyncWebServerRequest *request,
+                                 const String &filename,
+                                 size_t index,
+                                 uint8_t *data,
+                                 size_t len,
+                                 bool final);
+
+  // Helper: Add a blank region.
+  static void addBlankRegion(uint32_t offset, uint32_t length, const char* description);
 };
 
 #endif  // ESP32FIRMWAREDOWNLOADER_H
